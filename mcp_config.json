@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "wifi-server": {
+      "command": "python3",
+      "args": ["wifi_mcp_server.py"],
+      "env": {}
+    }
+  }
+}
