@@ -395,6 +395,15 @@ Add the following to your VS Code settings (`~/.config/Code/User/settings.json`)
 }
 ```
 
+### 6. Running the agent locally
+```bash
+# Start the MCP server in HTTP mode
+nohup python3 wifi_mcp_server.py --mode http &
+python3 ./wifi_agent.py --llm-url http://localhost:8000 -model llama3.1:8b --wifi-server-url http://localhost:8080
+```
+
+> **Note:** For running Ollama with Intel GPU acceleration, I used the [mattcurf/ollama-intel-gpu](https://github.com/mattcurf/ollama-intel-gpu/) Docker service. This enables efficient LLM inference on Intel hardware.
+
 ### 6. Demo Commands
 
 Once integrated, try these commands in the VS Code chat:
