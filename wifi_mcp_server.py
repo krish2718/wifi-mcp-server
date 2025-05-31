@@ -3,6 +3,9 @@
 Wi-Fi MCP Server - A Model Context Protocol server for Wi-Fi operations
 """
 
+import sys
+import argparse
+from aiohttp import web
 import asyncio
 import json
 import re
@@ -24,10 +27,7 @@ except ImportError:
         from mcp.types import Tool, TextContent
     except ImportError:
         # Fallback for different MCP versions
-        print(
-            "Warning: MCP imports not available. "
-            "Running in standalone mode only."
-        )
+        print("Warning: MCP imports not available. Running in standalone mode only.")
         Server = None
         stdio_server = None
         Tool = None
@@ -75,9 +75,7 @@ class WiFiMCPServer:
                         "properties": {
                             "interface": {
                                 "type": "string",
-                                "description": (
-                                    "Wi-Fi interface name (optional)"
-                                ),
+                                "description": ("Wi-Fi interface name (optional)"),
                             }
                         },
                     },
@@ -90,9 +88,7 @@ class WiFiMCPServer:
                         "properties": {
                             "interface": {
                                 "type": "string",
-                                "description": (
-                                    "Wi-Fi interface name (optional)"
-                                ),
+                                "description": ("Wi-Fi interface name (optional)"),
                             }
                         },
                     },
@@ -104,6 +100,8 @@ class WiFiMCPServer:
                 ),
             ]
 
+        self.handle_list_tools = handle_list_tools
+
         @self.server.call_tool()
         async def handle_call_tool(name: str, arguments: Dict[str, Any]):
             """Handle tool calls"""
@@ -111,24 +109,16 @@ class WiFiMCPServer:
                 if name == "scan_wifi":
                     result = await self.scan_wifi(arguments.get("interface"))
                 elif name == "get_wifi_status":
-                    result = await self.get_wifi_status(
-                        arguments.get("interface")
-                    )
+                    result = await self.get_wifi_status(arguments.get("interface"))
                 elif name == "get_signal_strength":
-                    result = await self.get_signal_strength(
-                        arguments.get("interface")
-                    )
+                    result = await self.get_signal_strength(arguments.get("interface"))
                 elif name == "list_interfaces":
                     result = await self.list_interfaces()
                 else:
                     raise ValueError(f"Unknown tool: {name}")
 
                 if TextContent is not None:
-                    return [
-                        TextContent(
-                            type="text", text=json.dumps(result, indent=2)
-                        )
-                    ]
+                    return [TextContent(type="text", text=json.dumps(result, indent=2))]
                 else:
                     return json.dumps(result, indent=2)
             except Exception as e:
@@ -138,13 +128,13 @@ class WiFiMCPServer:
                 else:
                     return error_msg
 
+        self.handle_call_tool = handle_call_tool
+
     async def run_command(self, command: List[str]) -> str:
         """Run a system command and return output"""
         try:
             process = await asyncio.create_subprocess_exec(
-                *command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
             stdout, stderr = await process.communicate()
 
@@ -368,8 +358,26 @@ class WiFiMCPServer:
 
 
 async def main():
-    """Main function to run the MCP server with stdio"""
-    import sys
+    """Main function to run the MCP server with stdio or HTTP"""
+    parser = argparse.ArgumentParser(description="Wi-Fi MCP Server")
+    parser.add_argument(
+        "--mode",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="Run server in stdio or http mode (default: stdio)",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host for HTTP mode (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8080,
+        help="Port for HTTP mode (default: 8080)",
+    )
+    args = parser.parse_args()
 
     server = WiFiMCPServer()
 
@@ -380,15 +388,89 @@ async def main():
         )
         sys.exit(1)
 
-    try:
-        # Run the server using stdio
-        async with stdio_server() as (read_stream, write_stream):
-            await server.server.run(
-                read_stream, write_stream, server.server.create_initialization_options()
-            )
-    except Exception as e:
-        print(f"Error running MCP server: {e}", file=sys.stderr)
-        sys.exit(1)
+    if args.mode == "stdio":
+        try:
+            # Run the server using stdio
+            async with stdio_server() as (read_stream, write_stream):
+                await server.server.run(
+                    read_stream,
+                    write_stream,
+                    server.server.create_initialization_options(),
+                )
+        except Exception as e:
+            print(f"Error running MCP server: {e}", file=sys.stderr)
+            sys.exit(1)
+    elif args.mode == "http":
+        # HTTP mode using aiohttp
+        app = web.Application()
+
+        async def list_tools_handler(request):
+            try:
+                # No input expected
+                result = await server.handle_list_tools()
+                # If result is a list of TextContent, extract text
+                if isinstance(result, list) and hasattr(result[0], "text"):
+                    result = [x.text for x in result]
+                return web.json_response({"result": result})
+            except Exception as e:
+                return web.json_response({"error": str(e)}, status=500)
+
+        async def call_tool_handler(request):
+            try:
+                data = await request.json()
+                name = data.get("tool_name") or data.get("name")
+                arguments = data.get("tool_args") or data.get("arguments", {})
+                if not name:
+                    return web.json_response({"error": "Missing tool_name"}, status=400)
+                result = await server.handle_call_tool(name, arguments)
+                # If result is a list of TextContent, extract text
+                if isinstance(result, list) and hasattr(result[0], "text"):
+                    result = [x.text for x in result]
+                return web.json_response(
+                    result if isinstance(result, dict) else {"result": result}
+                )
+            except Exception as e:
+                return web.json_response({"error": str(e)}, status=500)
+
+        async def mcp_handler(request):
+            try:
+                data = await request.json()
+                # Simulate MCP protocol: expects {"method": ..., "params": ...}
+                method = data.get("method")
+                params = data.get("params", {})
+                if method == "list_tools":
+                    result = await server.handle_list_tools()
+                elif method == "call_tool":
+                    name = params.get("name")
+                    arguments = params.get("arguments", {})
+                    result = await server.handle_call_tool(name, arguments)
+                else:
+                    return web.json_response({"error": "Unknown method"}, status=400)
+                # If result is a list of TextContent, extract text
+                if isinstance(result, list) and hasattr(result[0], "text"):
+                    result = [x.text for x in result]
+                return web.json_response({"result": result})
+            except Exception as e:
+                return web.json_response({"error": str(e)}, status=500)
+            except Exception as e:
+                return web.json_response({"error": str(e)}, status=500)
+
+        # Standard MCP endpoints
+        app.router.add_post("/mcp", mcp_handler)
+        app.router.add_post("/list_tools", list_tools_handler)
+        app.router.add_post("/call_tool", call_tool_handler)
+        app.router.add_post(
+            "/execute", call_tool_handler
+        )  # For wifi_agent.py compatibility
+
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, args.host, args.port)
+        print(f"Serving HTTP on {args.host}:{args.port}")
+        await site.start()
+        # Run forever
+        while True:
+            await asyncio.sleep(3600)
 
 
 if __name__ == "__main__":
